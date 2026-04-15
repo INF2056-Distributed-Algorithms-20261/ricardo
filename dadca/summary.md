@@ -6,27 +6,25 @@ A multi-UAV data collection simulation built on [GrADyS-SIM NextGen](https://git
 
 ## Overview
 
-The system models a network of UAVs that shuttle between a Base Station and a line of ground sensors, collecting data packets and delivering them back. Because UAVs have finite batteries, a shared Energy Station handles recharging — one UAV at a time — using a negotiated mutual exclusion protocol.
+The system models a network of UAVs that shuttle between a Base Station (G-Station) and a line of ground sensors, collecting data packets and delivering them back. Because UAVs have finite batteries, a shared Energy Station handles recharging — one UAV at a time — using a distributed mutual-exclusion protocol.
 
 ---
 
 ## Agents
 
-The simulation contains five types of nodes:
-
 | Agent | Colour | Role |
 |---|---|---|
-| Base Station | 🟠 Orange | Receives all collected data; the sink of the network |
-| Sensor (×3) | 🩵 Cyan | Generates one data packet per second; uploads to any nearby UAV |
-| UAV (×3) | 🟢/🟡/🔴 | Collects packets from sensors and delivers them to the Base Station |
-| Energy Station | 🟣 Purple | Single-slot charging station; manages mutual exclusion |
+| G-Station (Base) | 🟠 Orange | Receives all collected data; the network sink |
+| Sensor (×7) | 🩵 Cyan | Generates one data packet every 4 s; uploads to any nearby UAV |
+| UAV (×5) | 🟢/🟡/🔴 | Collects packets from sensors and delivers to G-Station |
+| E-Station | 🟣 Purple | Single-slot charging station; enforces mutual exclusion |
 
 ### UAV colour key
 
 | Colour | Meaning |
 |---|---|
 | 🟢 Green | Patrolling normally |
-| 🟡 Yellow | Battery low — flying to, querying, or waiting at the E-Station |
+| 🟡 Yellow | Battery low — flying to, announcing, or waiting at the E-Station |
 | 🔴 Red | Actively charging |
 
 ---
@@ -34,72 +32,100 @@ The simulation contains five types of nodes:
 ## Spatial Layout
 
 ```
-Sensor 3  (0, 90)
-    |
-Sensor 2  (0, 60)       E-Station  (~78, 45)
-    |
-Sensor 1  (0, 30)
-    |
-Base Station  (0, 0)          
+G-Station (Base):   (0, 0, 0)
+
+Sensors (x-axis):
+  S0  (50, 0)
+  S1  (100, 0)
+  S2  (150, 0)
+  S3  (250, 0)
+  S4  (300, 0)
+  S5  (350, 0)
+  S6  (450, 0)
+
+E-Station:          (225, 389.71, 0)
+  → equilateral triangle vertex opposite the G-Station–S6 base edge
 ```
 
-The three sensors are placed in a straight vertical line north of the Base Station at 30 m intervals. Each UAV patrols one segment of that line at a flight altitude of 20 m.
+All UAVs fly at **15 m** altitude.
 
-The Energy Station is placed at the third vertex of an equilateral triangle whose base connects the Base Station `(0, 0)` and the last sensor `(0, 90)`. This puts it clearly off to the side of the sensor line — roughly at `(78, 45)` — so UAVs must make a deliberate detour to reach it rather than passing through it incidentally.
+---
+
+## UAV Route Assignment
+
+5 UAVs cover 7 sensors. Each UAV patrols base ↔ its far waypoint, collecting from any sensor within comm range (20 m) along the way.
+
+| UAV | Route (at 15 m alt) | Sensors primarily served |
+|---|---|---|
+| 0 | (0,0) ↔ (50,0) | S0 |
+| 1 | (0,0) ↔ (150,0) | S1, S2 |
+| 2 | (0,0) ↔ (250,0) | S3 |
+| 3 | (0,0) ↔ (350,0) | S4, S5 |
+| 4 | (0,0) ↔ (450,0) | S6 |
 
 ---
 
 ## DADCA Protocol
 
-DADCA (Distributed Aerial Data Collection Algorithm) works as follows:
-
-1. Each UAV follows a fixed two-waypoint route — Base Station hover point ↔ assigned sensor — looping back and forth indefinitely using `LoopMission.REVERSE`.
-2. Every second the UAV broadcasts a **heartbeat** containing its ID. Any sensor within radio range responds by uploading all its buffered packets and resetting its own counter.
-3. When the UAV reaches the Base Station end of its route it **delivers** its buffered packets via broadcast. The Base Station acknowledges with an ACK and the UAV clears its buffer.
-
-Because every UAV broadcasts, sensors opportunistically upload to whichever drone passes closest, not just the one "assigned" to their route.
+1. Each UAV follows a fixed two-waypoint route (G-Station hover ↔ assigned sensor) looping back using `LoopMission.REVERSE`.
+2. Every second the UAV broadcasts a **heartbeat**. Any sensor within radio range responds by uploading all buffered packets and resetting its counter.
+3. When the UAV reaches the G-Station end of its route it **delivers** all buffered packets via broadcast. The base acknowledges and the UAV clears its buffer.
 
 ---
 
 ## Battery System
 
-Each UAV starts with a full battery of **1000 m** of flight range. Battery is drained continuously in `handle_telemetry` by subtracting the Euclidean distance flown since the last telemetry tick.
-
-When battery drops below **25%** (250 m remaining) while patrolling, the UAV:
-
-1. Stops its patrol mission.
-2. Flies directly to the Energy Station hover point at `(ex, ey, 20 m)`.
-3. Enters the recharging negotiation protocol described below.
-
-After a full recharge the UAV restarts its patrol from the Base Station waypoint.
-
-### Tunable constants
-
-| Constant | Default | Meaning |
+| Constant | Value | Meaning |
 |---|---|---|
-| `BATTERY_CAPACITY` | 1000 m | Total flight range on a full charge |
-| `BATTERY_LOW_THRESHOLD` | 0.25 | Fraction of capacity at which diversion triggers |
+| `BATTERY_CAPACITY` | 100 | Total battery units on a full charge |
+| `BATTERY_DRAIN_RATE` | 0.05 | Battery units lost **per metre** flown |
+| `BATTERY_LOW_THRESHOLD` | 0.25 | Fraction of capacity at which diversion triggers (= 25 units) |
 | `RECHARGE_TIME` | 30 s | Time to go from empty to full |
-| `UAV_SPEED` | 10 m/s | Flight speed for all UAVs |
-| `COMM_RANGE` | 60 m | Radio range for all messages |
+| `UAV_SPEED` | 3 m/s | Flight speed for all UAVs |
+| `COMM_RANGE` | 20 m | Radio range for all messages |
+| `SENSOR_PACKET_INTERVAL` | 4 s | Seconds between packets generated by each sensor |
+
+When battery drops below **25%** (25 units) while patrolling the UAV stops its mission, flies directly to the E-Station hover point, and enters the MEx-Recharge election.
 
 ---
 
-## Recharge Protocol
+## MEx-Recharge — Distributed Priority Election
 
-The Energy Station has a single charging slot. When multiple UAVs need to recharge, they negotiate mutual exclusion using a four-message protocol.
+The previous design had each UAV reactively query the currently-charging UAV's battery to decide whether to wait or return. The new design replaces this with a **distributed leader election** among all UAVs competing for the charging slot. This eliminates race conditions and ensures exactly the highest-priority UAV claims the slot.
 
-### Messages
+### Priority rule
+
+```
+priority(battery, packet_count) = (battery, -packet_count)
+```
+
+Lower value = higher charging priority:
+- **Primary key**: lower battery → charge first.
+- **Tiebreaker**: more buffered packets → charge first (serves data-collection objectives).
+- **Final tiebreaker**: lower node ID (deterministic, prevents split-brain).
+
+### Protocol messages
 
 | Message | Direction | Meaning |
 |---|---|---|
-| `request_charge` | UAV → E-Station | Request the charging slot |
+| `want_charge` | UAV → broadcast | I need to charge; here is my priority |
+| `want_ack` | UAV → UAV (unicast) | I acknowledge your announcement; here is my priority |
+| `request_charge` | UAV → E-Station | I won the election; give me the slot |
 | `ack_charge` | E-Station → UAV | Slot granted; begin charging |
-| `slot_busy` | E-Station → UAV | Slot occupied; here is the charging UAV's ID |
+| `slot_busy` | E-Station → UAV | Slot occupied; wait |
 | `charge_done` | UAV → E-Station | Charging complete; releasing the slot |
 | `slot_free` | E-Station → all | Slot is now free (broadcast) |
-| `status_query` | UAV → UAV | What is your current battery level? |
-| `status_reply` | UAV → UAV | My current battery level is X |
+
+### Election procedure
+
+1. **ANNOUNCING**: On arriving at the E-Station (or when `slot_free` is received while `WAITING`), a UAV broadcasts `want_charge` with its current battery and packet count, then starts an `ANNOUNCE_WINDOW` (3 s) timer.
+2. **Peer response**: Every UAV that receives `want_charge` — regardless of its own state — replies with `want_ack` containing its own battery and packet count. This gives the announcer a complete picture of all contenders.
+3. **Election resolution** (when `election_done` fires):
+   - Compare own priority against all received `want_ack` priorities.
+   - **Winner** → send `request_charge` to E-Station.
+   - **Loser** → enter `WAITING`.
+4. **Slot acquisition**: If the E-Station replies `ack_charge` → begin charging. If `slot_busy` (edge case: two winners from near-simultaneous elections) → enter `WAITING` and retry on `slot_free`.
+5. **Slot release**: On full charge the UAV sends `charge_done`; the E-Station broadcasts `slot_free`; all `WAITING` UAVs re-run the election.
 
 ### State machine
 
@@ -110,49 +136,25 @@ PATROLLING
 TO_ESTATION
     │  arrived (dist < 2 m)
     ▼
-  ┌─────────────────────────────────┐
-  │        request_charge           │
-  └──────────┬──────────────────────┘
-             │
-     ┌───────┴────────┐
-     │ ack_charge     │ slot_busy
-     ▼                ▼
-  CHARGING         QUERYING ──── status_reply ──► decision
-     │                │                               │
-     │                │ query_timeout              ┌──┴──────────────────┐
-     │                ▼                            │ charger almost done │
-     │             WAITING ◄───────────────────────┤   OR critically low │
-     │                │ slot_free                  └─────────────────────┘
-     │                ▼                                    │ otherwise
-     │           request_charge                           ▼
-     │                                              PATROLLING (resume)
-     │  battery full
-     ▼
-  charge_done → PATROLLING
+ANNOUNCING ──── election_done ──► compare priorities
+    │                                     │              │
+    │ ack_charge                         WIN            LOSE
+    ▼                                     │              ▼
+CHARGING ◄────────────────────────────────┘           WAITING
+    │                                                    │
+    │ battery full                              slot_free received
+    │                                                    │
+    ▼                                                    ▼
+charge_done → PATROLLING                           ANNOUNCING (re-election)
 ```
-
-### Smart waiting decision (QUERYING state)
-
-When told the slot is busy, a UAV does not blindly queue. It first sends a `status_query` directly to the charging UAV. Based on the reply it makes a cost/benefit decision:
-
-- **Wait** if the charger's battery is already above 50% (it will finish soon) or if its own battery is critically low (below 15%).
-- **Return to patrol** otherwise — the charger still has a long way to go and the waiting UAV has enough battery to do useful work in the meantime.
-
-This prevents all three UAVs from clustering at the E-Station simultaneously, keeping sensors covered while recharging happens.
-
-### Directed vs broadcast messages
-
-Once a UAV has learned the E-Station's node ID (from any `ack_charge` or `slot_busy` reply), all subsequent `request_charge` and `charge_done` messages are sent as **directed** unicast rather than broadcast. This eliminates a race condition where a broadcast could be processed by the E-Station in an ambiguous order relative to a concurrent `charge_done`, which previously caused a UAV to remain stuck in the WAITING state indefinitely.
 
 ---
 
 ## Visualization
 
-The simulation connects to the [GrADyS visualization tool](https://project-gradys.github.io/gradys-sim-nextgen-visualization/) via WebSocket on port 5678. Open that URL in a browser while the simulation is running to see the 3D view.
+Connect to the [GrADyS visualization tool](https://project-gradys.github.io/gradys-sim-nextgen-visualization/) via WebSocket on port 5678 while the simulation is running.
 
-Node colours are updated continuously via `handle_telemetry` (for moving nodes) and a 1-second repaint timer (for stationary nodes), so the browser picks up the correct colours whenever it connects, even mid-simulation.
-
-To auto-open the browser when the simulation starts, set `open_browser=True` in `VisualizationConfiguration` inside `main()`.
+To auto-open the browser at startup, set `open_browser=True` in `VisualizationConfiguration` inside `main()`.
 
 ---
 
